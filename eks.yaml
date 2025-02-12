@@ -1,0 +1,125 @@
+---
+- name: Deploy EKS Cluster, vLLM, and Envoy AI Gateway
+  hosts: localhost
+  gather_facts: false
+  vars:
+    cluster_name: "envoy-ai-gateway-eks-cluster"
+    region: "us-east-1"
+    azs: "us-east-1a"
+    node_instance_type: "g4dn.xlarge"
+    eks_version: "1.27"
+    ssh_key_name: "my-eks-key"
+    ssh_public_key: "~/.ssh/id_rsa.pub"
+    vllm_image: "vllm/vllm-openai:latest"
+    model_1: "facebook/opt-6.7b"
+    model_2: "mistralai/Mistral-7B-Instruct-v0.1"
+    enable_public_endpoint: false
+    envoy_namespace: "envoy-ai-gateway"
+    envoy_release_name: "ai-gateway"
+
+  tasks:
+    - name: Ensure AWS CLI, eksctl, and Helm are installed
+      command: "{{ item }}"
+      loop:
+        - "aws --version"
+        - "eksctl version"
+        - "helm version"
+      register: check_tools
+      ignore_errors: true
+      failed_when: check_tools.rc != 0
+
+    #- name: Upload SSH Key to AWS
+    #  command: >
+    #    aws ec2 import-key-pair --key-name {{ ssh_key_name }}
+    #    --public-key-material fileb://{{ ssh_public_key }}
+    #  register: ssh_key_upload
+    #  ignore_errors: true
+
+    - name: Create EKS cluster with two g4dn.xlarge nodes
+      command: >
+        eksctl create cluster 
+        --name {{ cluster_name }}
+        --region {{ region }}
+        --version {{ eks_version }}
+        --nodegroup-name ng-1
+        --node-type {{ node_instance_type }}
+        --nodes 2
+        --nodes-min 2
+        --nodes-max 2
+        --managed
+      register: eks_creation
+      changed_when: "'created' in eks_creation.stdout"
+
+    - name: Update kubeconfig to access EKS cluster
+      command: "aws eks update-kubeconfig --region {{ region }} --name {{ cluster_name }}"
+
+    - name: Install NVIDIA device plugin
+      command: >
+        kubectl apply -f https://raw.githubusercontent.com/NVIDIA/k8s-device-plugin/v0.14.0/nvidia-device-plugin.yml
+
+    - name: Create IAM OIDC provider for EKS cluster
+      command: >
+        eksctl utils associate-iam-oidc-provider 
+        --region {{ region }}
+        --cluster {{ cluster_name }}
+        --approve
+
+    - name: Create IAM policy and service account for EBS CSI driver
+      command: >
+        eksctl create iamserviceaccount
+        --name ebs-csi-controller-sa
+        --namespace kube-system
+        --cluster {{ cluster_name }}
+        --attach-policy-arn arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy
+        --approve
+        --region {{ region }}
+
+    - name: Install EBS CSI driver using Helm
+      shell: |
+        helm repo add aws-ebs-csi-driver https://kubernetes-sigs.github.io/aws-ebs-csi-driver && \
+        helm repo update && \
+        helm upgrade --install aws-ebs-csi-driver aws-ebs-csi-driver/aws-ebs-csi-driver \
+        --namespace kube-system \
+        --set controller.serviceAccount.create=false \
+        --set controller.serviceAccount.name=ebs-csi-controller-sa
+
+    - name: Create storage class for EBS
+      shell: |
+        cat <<'EOF' | kubectl apply -f -
+        apiVersion: storage.k8s.io/v1
+        kind: StorageClass
+        metadata:
+          name: ebs-sc
+        provisioner: ebs.csi.aws.com
+        volumeBindingMode: WaitForFirstConsumer
+        EOF
+
+    - name: Create PVCs for model storage
+      shell: |
+        cat <<EOF | kubectl apply -f -
+        apiVersion: v1
+        kind: PersistentVolumeClaim
+        metadata:
+          name: model-storage-1
+        spec:
+          accessModes:
+            - ReadWriteOnce
+          storageClassName: ebs-sc
+          resources:
+            requests:
+              storage: 100Gi
+        ---
+        apiVersion: v1
+        kind: PersistentVolumeClaim
+        metadata:
+          name: model-storage-2
+        spec:
+          accessModes:
+            - ReadWriteOnce
+          storageClassName: ebs-sc
+          resources:
+            requests:
+              storage: 100Gi
+        EOF
+
+

@@ -1,0 +1,70 @@
+---
+- name: Clean up EKS cluster, public endpoints, and resources
+  hosts: localhost
+  gather_facts: false
+  vars:
+    cluster_name: "envoy-ai-gateway-eks-cluster"
+    region: "us-east-1"
+    ssh_key_name: "my-eks-key"
+    envoy_namespace: "envoy-ai"
+
+  tasks:
+    - name: Ensure AWS CLI and eksctl are installed
+      command: "{{ item }}"
+      loop:
+        - "aws --version"
+        - "eksctl version"
+      register: check_tools
+      ignore_errors: true
+      failed_when: check_tools.rc != 0
+
+    - name: Delete vLLM services
+      command: kubectl delete svc vllm-model-1-service vllm-model-2-service --ignore-not-found=true
+      ignore_errors: true
+
+    - name: Delete vLLM deployments
+      command: kubectl delete deployment vllm-model-1 vllm-model-2 --ignore-not-found=true
+      ignore_errors: true
+
+    - name: Get EBS volume IDs from PVCs
+      shell: |
+        kubectl get pv -o jsonpath='{range .items[?(@.spec.csi.driver=="ebs.csi.aws.com")]}{.spec.csi.volumeHandle}{"\n"}{end}'
+      register: ebs_volumes
+      ignore_errors: true
+
+    - name: Delete PVCs
+      command: kubectl delete pvc model-storage-1 model-storage-2 --ignore-not-found=true
+      ignore_errors: true
+
+    - name: Delete persistent volumes
+      command: kubectl delete pv $(kubectl get pv -o jsonpath='{range .items[?(@.spec.csi.driver=="ebs.csi.aws.com")]}{.metadata.name}{" "}{end}')
+      ignore_errors: true
+
+    - name: Delete EBS volumes
+      command: aws ec2 delete-volume --volume-id {{ item }}
+      with_items: "{{ ebs_volumes.stdout_lines }}"
+      ignore_errors: true
+      when: ebs_volumes.stdout_lines is defined and ebs_volumes.stdout_lines | length > 0
+
+    - name: Delete storage class
+      command: kubectl delete sc model-storage-class --ignore-not-found=true
+      ignore_errors: true
+
+    - name: Delete EKS cluster
+      command: >
+        eksctl delete cluster --name {{ cluster_name }} --region {{ region }}
+      register: eks_delete
+      changed_when: "'deleted' in eks_delete.stdout"
+
+    - name: Wait for EKS cluster deletion to complete
+      pause:
+        minutes: 5
+
+    - name: Delete AWS SSH key pair
+      command: "aws ec2 delete-key-pair --key-name {{ ssh_key_name }}"
+      ignore_errors: true
+
+
+    - name: Print cleanup confirmation
+      debug:
+        msg: "All EKS resources, public endpoints, and SSH keys have been cleaned up."

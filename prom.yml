@@ -1,0 +1,107 @@
+---
+- name: Deploy EKS Cluster, vLLM, and Envoy AI Gateway
+  hosts: localhost
+  gather_facts: false
+  vars:
+    cluster_name: "my-eks-cluster"
+    region: "us-east-1"
+    azs: "us-east-1a,us-east-1b"
+    node_instance_type: "g4dn.xlarge"
+    eks_version: "1.27"
+    ssh_key_name: "my-eks-key"
+    ssh_public_key: "~/.ssh/id_rsa.pub"
+    vllm_image: "vllm/vllm-openai:latest"
+    envoy_namespace: "envoy-gateway-system"
+    envoy_release_name: "eg"
+    vllm_deployments:
+      - name: vllm-model-1
+        model: "facebook/opt-6.7b"
+        header_value: "facebook-opt-6.7b"
+        pvc: "model-storage-1"
+      - name: vllm-model-2
+        model: "microsoft/Phi-4"
+        header_value: "phi-4"
+        pvc: "model-storage-2"
+    prometheus_namespace: "monitoring"
+    prometheus_version: "v2.47.0"
+
+
+  tasks:
+    - name: Install EBS CSI driver using Helm
+      shell: |
+        helm repo add aws-ebs-csi-driver https://kubernetes-sigs.github.io/aws-ebs-csi-driver && \
+        helm repo update && \
+        helm upgrade --install aws-ebs-csi-driver aws-ebs-csi-driver/aws-ebs-csi-driver \
+        --namespace kube-system \
+        --set controller.serviceAccount.create=false \
+        --set controller.serviceAccount.name=ebs-csi-controller-sa
+
+    - name: Create storage class for EBS
+      shell: |
+        cat <<'EOF' | kubectl apply -f -
+        apiVersion: storage.k8s.io/v1
+        kind: StorageClass
+        metadata:
+          name: ebs-sc
+        provisioner: ebs.csi.aws.com
+        volumeBindingMode: WaitForFirstConsumer
+        EOF
+
+    - name: Create PVCs for model storage
+      shell: |
+        cat <<EOF | kubectl apply -f -
+        apiVersion: v1
+        kind: PersistentVolumeClaim
+        metadata:
+          name: model-storage-1
+        spec:
+          accessModes:
+            - ReadWriteOnce
+          storageClassName: ebs-sc
+          resources:
+            requests:
+              storage: 100Gi
+        ---
+        apiVersion: v1
+        kind: PersistentVolumeClaim
+        metadata:
+          name: model-storage-2
+        spec:
+          accessModes:
+            - ReadWriteOnce
+          storageClassName: ebs-sc
+          resources:
+            requests:
+              storage: 100Gi
+        EOF
+
+    - name: Create monitoring namespace
+      command: kubectl create namespace {{ prometheus_namespace }}
+      ignore_errors: true
+
+    - name: Add Prometheus helm repo
+      command: helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+
+    - name: Update helm repos
+      command: helm repo update
+
+    - name: Install Prometheus Stack
+      shell: |
+        helm upgrade --install prometheus prometheus-community/kube-prometheus-stack \
+          --namespace {{ prometheus_namespace }} \
+          --set prometheus.prometheusSpec.serviceMonitorSelectorNilUsesHelmValues=false \
+          --set prometheus.prometheusSpec.podMonitorSelectorNilUsesHelmValues=false \
+          --set grafana.enabled=true \
+          --set grafana.adminPassword=admin \
+          --set prometheus.prometheusSpec.retention=15d \
+          --set prometheus.prometheusSpec.resources.requests.memory=1Gi \
+          --set prometheus.prometheusSpec.resources.requests.cpu=500m \
+          --set prometheus.prometheusSpec.resources.limits.memory=2Gi \
+          --set prometheus.prometheusSpec.resources.limits.cpu=1000m
+
+    - name: Wait for Prometheus CRDs to be ready
+      shell: |
+        kubectl wait --for condition=established --timeout=60s crd/prometheuses.monitoring.coreos.com
+        kubectl wait --for condition=established --timeout=60s crd/servicemonitors.monitoring.coreos.com
+        kubectl wait --for condition=established --timeout=60s crd/podmonitors.monitoring.coreos.com
+        kubectl wait --for condition=established --timeout=60s crd/alertmanagers.monitoring.coreos.com

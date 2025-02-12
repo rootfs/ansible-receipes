@@ -1,0 +1,143 @@
+---
+- name: Deploy Envoy AI Gateway
+  hosts: localhost
+  gather_facts: false
+  
+  vars:
+    namespace_gateway: envoy-gateway-system
+    namespace_ai_gateway: envoy-ai-gateway-system
+
+  tasks:
+    - name: Deploy Envoy Gateway via Helm
+      shell: |
+        helm upgrade -i eg oci://docker.io/envoyproxy/gateway-helm \
+          --version v0.0.0-latest \
+          --namespace {{ namespace_gateway }} \
+          --create-namespace
+      register: helm_result
+
+    - name: Deploy AI Gateway via Helm
+      shell: |
+        helm upgrade -i aieg oci://ghcr.io/envoyproxy/ai-gateway/ai-gateway-helm \
+          --version v0.0.0-latest \
+          --namespace {{ namespace_ai_gateway }} \
+          --create-namespace
+      register: ai_helm_result
+
+    - name: Create basic gateway configuration
+      shell: |
+        cat << 'EOF' | kubectl apply -f -
+        apiVersion: gateway.networking.k8s.io/v1
+        kind: GatewayClass
+        metadata:
+          name: envoy-ai-gateway-basic
+        spec:
+          controllerName: gateway.envoyproxy.io/gatewayclass-controller
+        ---
+        apiVersion: gateway.networking.k8s.io/v1
+        kind: Gateway
+        metadata:
+          name: envoy-ai-gateway-basic
+          namespace: default
+        spec:
+          gatewayClassName: envoy-ai-gateway-basic
+          listeners:
+            - name: http
+              protocol: HTTP
+              port: 80
+        EOF
+      register: gateway_config_result
+      changed_when: gateway_config_result.rc == 0
+
+    - name: Create vLLM backend configurations
+      shell: |
+        cat << 'EOF' | kubectl apply -f -
+        apiVersion: aigateway.envoyproxy.io/v1alpha1
+        kind: AIServiceBackend
+        metadata:
+          name: envoy-ai-gateway-basic-vllm-1
+          namespace: default
+        spec:
+          schema:
+            name: OpenAI
+          backendRef:
+            name: vllm-model-1-service
+            kind: Service
+            port: 8000
+        ---
+        apiVersion: aigateway.envoyproxy.io/v1alpha1
+        kind: AIServiceBackend
+        metadata:
+          name: envoy-ai-gateway-basic-vllm-2
+          namespace: default
+        spec:
+          schema:
+            name: OpenAI
+          backendRef:
+            name: vllm-model-1-service
+            kind: Service
+            port: 8000
+        EOF
+      register: vllm_backend_result
+      changed_when: vllm_backend_result.rc == 0
+
+    - name: Create routing configuration
+      shell: |
+        cat << 'EOF' | kubectl apply -f -
+        apiVersion: aigateway.envoyproxy.io/v1alpha1
+        kind: AIGatewayRoute
+        metadata:
+          name: envoy-ai-gateway-basic
+          namespace: default
+        spec:
+          schema:
+            name: OpenAI
+          targetRefs:
+            - name: envoy-ai-gateway-basic
+              kind: Gateway
+              group: gateway.networking.k8s.io
+          rules:
+            - matches:
+                - headers:
+                    - type: Exact
+                      name: x-ai-eg-model
+                      value: facebook/opt-6.7b
+              backendRefs:
+                - name: envoy-ai-gateway-basic-vllm-1
+            - matches:
+                - headers:
+                    - type: Exact
+                      name: x-ai-eg-model
+                      value: phi-3-mini-4k-instruct
+              backendRefs:
+                - name: envoy-ai-gateway-basic-vllm-2
+        EOF
+      register: route_config_result
+      changed_when: route_config_result.rc == 0
+
+    - name: Restart Envoy Gateway deployment
+      shell: kubectl rollout restart -n {{ namespace_gateway }} deployment/envoy-gateway
+      register: restart_result
+      changed_when: restart_result.rc == 0
+
+    - name: Wait for Envoy Gateway to be available
+      shell: |
+        kubectl wait --timeout=2m -n {{ namespace_gateway }} \
+          deployment/envoy-gateway --for=condition=Available
+      register: wait_result
+      changed_when: wait_result.rc == 0
+
+    - name: Wait for basic gateway pod to be ready
+      shell: |
+        kubectl wait pods --timeout=2m \
+          -l gateway.envoyproxy.io/owning-gateway-name=envoy-ai-gateway-basic \
+          -n {{ namespace_gateway }} \
+          --for=condition=Ready
+      register: pod_wait_result
+      changed_when: pod_wait_result.rc == 0
+
+    - name: Verify deployment
+      shell: |
+        kubectl get aigatewayroute,aiservicebackend,backend,backendtlspolicy -n default
+      register: verify_result
+      changed_when: false
