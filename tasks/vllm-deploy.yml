@@ -1,0 +1,200 @@
+---
+- name: Delete existing vLLM deployments and services
+  shell: |
+    kubectl delete deployment,service -l app.kubernetes.io/part-of=vllm || true
+    
+- name: Create Chat Template ConfigMaps
+  shell: |
+    echo "Applying chat templates..."
+    kubectl apply -f ./templates/phi-chat-template.yaml
+    kubectl apply -f ./templates/opt-chat-template.yaml   
+
+- name: Deploy vLLM Models
+  shell: |
+    kubectl apply -f - <<EOF
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: {{ item.name }}
+      labels:
+        app.kubernetes.io/part-of: vllm
+    spec:
+      replicas: 1
+      selector:
+        matchLabels:
+          app: {{ item.name }}
+      template:
+        metadata:
+          labels:
+            app: {{ item.name }}
+        spec:
+          containers:
+            - name: vllm-container
+              image: {{ vllm_image }}
+              command: ["/bin/sh", "-c"]
+              args:
+                - |
+                  python3 -m vllm.entrypoints.openai.api_server \
+                    --model {{ item.model }} \
+                    --tensor-parallel-size 1 \
+                    --dtype=half \
+                    --gpu-memory-utilization .95 \
+                    --max-model-len=1024 \
+                    --chat-template /templates/template.jinja
+              ports:
+                - containerPort: 8000
+                  name: http
+              volumeMounts:
+                - name: model-cache
+                  mountPath: /root/.cache/huggingface
+                - name: chat-template
+                  mountPath: /templates
+              resources:
+                limits:
+                  nvidia.com/gpu: 1
+              startupProbe:
+                httpGet:
+                  path: /v1/models
+                  port: 8000
+                failureThreshold: 360
+                periodSeconds: 10
+              readinessProbe:
+                httpGet:
+                  path: /v1/models
+                  port: 8000
+                initialDelaySeconds: 60
+                periodSeconds: 30
+              livenessProbe:
+                httpGet:
+                  path: /v1/models
+                  port: 8000
+                initialDelaySeconds: 60
+                periodSeconds: 30
+          volumes:
+            - name: model-cache
+              persistentVolumeClaim:
+                claimName: {{ item.pvc }}
+            - name: chat-template
+              configMap:
+                name: "{% if item.model == 'microsoft/Phi-3-mini-4k-instruct' %}phi-chat-template{% else %}opt-chat-template{% endif %}"
+    EOF
+  loop: "{{ vllm_deployments }}"
+
+- name: Create vLLM Services
+  shell: |
+    kubectl apply -f - <<EOF
+    apiVersion: v1
+    kind: Service
+    metadata:
+      name: {{ item.name }}-service
+      labels:
+        app: {{ item.name }}
+        app.kubernetes.io/part-of: vllm
+        model_name: {{ item.model | replace('/', '-') }}
+    spec:
+      type: ClusterIP
+      selector:
+        app: {{ item.name }}
+      ports:
+        - protocol: TCP
+          port: 8000
+          targetPort: http
+          name: http
+    EOF
+  loop: "{{ vllm_deployments }}"
+
+- name: Create ServiceMonitors for vLLM
+  shell: |
+    kubectl apply -f - <<EOF
+    apiVersion: monitoring.coreos.com/v1
+    kind: ServiceMonitor
+    metadata:
+      name: {{ item.name }}-monitor
+      namespace: monitoring
+    spec:
+      endpoints:
+      - interval: 15s
+        port: http
+        relabelings:
+        - action: replace
+          regex: (.*)
+          replacement: $1
+          sourceLabels:
+          - __meta_kubernetes_pod_node_name
+          targetLabel: instance
+        scheme: http
+      jobLabel: app.kubernetes.io/name
+      selector:
+        matchLabels:
+          app: {{ item.name }}
+      namespaceSelector:
+        matchNames:
+        - default
+    EOF
+  loop: "{{ vllm_deployments }}"
+  when: install_prometheus|bool
+
+- name: Create GPU Operator RBAC and ServiceMonitor
+  shell: |
+    kubectl apply -f - <<EOF
+    apiVersion: rbac.authorization.k8s.io/v1
+    kind: Role
+    metadata:
+      name: prometheus-k8s-gpu-operator
+      namespace: monitoring
+      labels:
+        app.kubernetes.io/component: prometheus
+        app.kubernetes.io/name: prometheus
+    rules:
+    - apiGroups: [""]
+      resources: ["services", "endpoints", "pods"]
+      verbs: ["get", "list", "watch"]
+    ---
+    apiVersion: rbac.authorization.k8s.io/v1
+    kind: RoleBinding
+    metadata:
+      name: prometheus-k8s-gpu-operator
+      namespace: monitoring
+      labels:
+        app.kubernetes.io/component: prometheus
+        app.kubernetes.io/name: prometheus
+    roleRef:
+      apiGroup: rbac.authorization.k8s.io
+      kind: Role
+      name: prometheus-k8s-gpu-operator
+    subjects:
+    - kind: ServiceAccount
+      name: prometheus-k8s
+      namespace: monitoring
+    ---
+    apiVersion: monitoring.coreos.com/v1
+    kind: ServiceMonitor
+    metadata:
+      name: gpu-operator
+      namespace: monitoring
+    spec:
+      endpoints:
+      - interval: 5s
+        port: gpu-metrics
+        relabelings:
+        - action: replace
+          regex: (.*)
+          replacement: $1
+          sourceLabels:
+          - __meta_kubernetes_pod_node_name
+          targetLabel: instance
+        scheme: http
+      jobLabel: app.kubernetes.io/name
+      namespaceSelector:
+        matchNames:
+        - gpu-operator
+      selector:
+        matchLabels:
+          app: nvidia-dcgm-exporter
+    EOF
+  when: install_prometheus|bool
+
+- name: Wait for vLLM deployments to be ready
+  shell: |
+    kubectl wait --for=condition=available deployment/{{ item.name }} --timeout=600s
+  loop: "{{ vllm_deployments }}" 
