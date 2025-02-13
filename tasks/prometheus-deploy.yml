@@ -1,0 +1,46 @@
+---
+- name: Create monitoring namespace
+  command: kubectl create namespace {{ prometheus_namespace }}
+  ignore_errors: true
+
+- name: Add Prometheus helm repo
+  command: helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+
+- name: Update helm repos
+  command: helm repo update
+
+- name: Install Prometheus Stack
+  shell: |
+    helm upgrade --install prometheus prometheus-community/kube-prometheus-stack \
+      --namespace {{ prometheus_namespace }} \
+      --set prometheus.prometheusSpec.serviceMonitorSelectorNilUsesHelmValues=false \
+      --set prometheus.prometheusSpec.podMonitorSelectorNilUsesHelmValues=false \
+      --set grafana.enabled=true \
+      --set grafana.adminPassword=admin \
+      --set prometheus.prometheusSpec.retention=15d \
+      --set prometheus.prometheusSpec.resources.requests.memory=1Gi \
+      --set prometheus.prometheusSpec.resources.requests.cpu=500m \
+      --set prometheus.prometheusSpec.resources.limits.memory=2Gi \
+      --set prometheus.prometheusSpec.resources.limits.cpu=1000m
+
+- name: Wait for Prometheus CRDs to be ready
+  shell: |
+    kubectl wait --for condition=established --timeout=60s crd/prometheuses.monitoring.coreos.com
+    kubectl wait --for condition=established --timeout=60s crd/servicemonitors.monitoring.coreos.com
+    kubectl wait --for condition=established --timeout=60s crd/podmonitors.monitoring.coreos.com
+    kubectl wait --for condition=established --timeout=60s crd/alertmanagers.monitoring.coreos.com
+
+- name: Wait for Prometheus deployment to be ready
+  shell: |
+    kubectl -n {{ prometheus_namespace }} wait --for=condition=available deployment/prometheus-kube-prometheus-operator --timeout=300s
+    kubectl -n {{ prometheus_namespace }} wait --for=condition=available deployment/prometheus-grafana --timeout=300s
+
+- name: Get Grafana admin password
+  shell: |
+    echo "Grafana admin password: admin"
+    echo "To access Grafana dashboard, run: kubectl port-forward -n {{ prometheus_namespace }} svc/prometheus-grafana 3000:80"
+  register: grafana_info
+
+- name: Display Grafana access information
+  debug:
+    msg: "{{ grafana_info.stdout_lines }}" 

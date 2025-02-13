@@ -1,0 +1,34 @@
+---
+- name: Delete vLLM resources
+  block:
+    - name: Delete vLLM deployments and services
+      shell: kubectl delete deployment,service -l app.kubernetes.io/part-of=vllm
+      ignore_errors: true
+
+    - name: Delete PVCs
+      command: kubectl delete pvc {{ item.pvc }}
+      loop: "{{ vllm_deployments }}"
+      ignore_errors: true
+
+- name: Delete Prometheus Stack
+  shell: |
+    helm uninstall prometheus -n {{ prometheus_namespace }}
+    kubectl delete namespace {{ prometheus_namespace }}
+  when: install_prometheus|bool
+  ignore_errors: true
+
+- name: Delete Envoy Gateway
+  shell: |
+    helm uninstall -n {{ envoy_namespace }} eg
+    helm uninstall -n {{ envoy_ai_namespace }} aieg
+    kubectl delete namespace {{ envoy_namespace }} {{ envoy_ai_namespace }}
+  when: install_envoy|bool
+  ignore_errors: true
+
+- name: Delete EKS cluster
+  command: eksctl delete cluster --name {{ cluster_name }} --region {{ region }}
+  ignore_errors: true
+
+- name: Delete SSH key pair
+  command: aws ec2 delete-key-pair --key-name {{ ssh_key_name }}
+  ignore_errors: true 

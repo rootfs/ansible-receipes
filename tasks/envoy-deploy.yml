@@ -1,0 +1,149 @@
+---
+- name: Deploy Envoy Gateway via Helm
+  shell: |
+    helm upgrade -i eg oci://docker.io/envoyproxy/gateway-helm \
+      --version v0.0.0-latest \
+      --namespace {{ envoy_namespace }} \
+      --create-namespace
+  register: helm_result
+
+- name: Deploy AI Gateway via Helm
+  shell: |
+    helm upgrade -i aieg oci://ghcr.io/envoyproxy/ai-gateway/ai-gateway-helm \
+      --version v0.0.0-latest \
+      --namespace {{ envoy_ai_namespace }} \
+      --create-namespace
+  register: ai_helm_result
+
+- name: Create basic gateway configuration
+  shell: |
+    cat << 'EOF' | kubectl apply -f -
+    apiVersion: gateway.networking.k8s.io/v1
+    kind: GatewayClass
+    metadata:
+      name: envoy-ai-gateway-basic
+    spec:
+      controllerName: gateway.envoyproxy.io/gatewayclass-controller
+    ---
+    apiVersion: gateway.networking.k8s.io/v1
+    kind: Gateway
+    metadata:
+      name: envoy-ai-gateway-basic
+      namespace: default
+    spec:
+      gatewayClassName: envoy-ai-gateway-basic
+      listeners:
+        - name: http
+          protocol: HTTP
+          port: 80
+    EOF
+  register: gateway_config_result
+  changed_when: gateway_config_result.rc == 0
+
+- name: Create vLLM backend configurations
+  shell: |
+    cat << EOF | kubectl apply -f -
+    {% for deployment in vllm_deployments %}
+    apiVersion: aigateway.envoyproxy.io/v1alpha1
+    kind: AIServiceBackend
+    metadata:
+      name: envoy-ai-gateway-basic-{{ deployment.name }}
+      namespace: default
+    spec:
+      schema:
+        name: OpenAI
+      backendRef:
+        name: {{ deployment.name }}-service
+        kind: Service
+        port: 8000
+    ---
+    {% endfor %}
+    EOF
+  register: vllm_backend_result
+  changed_when: vllm_backend_result.rc == 0
+
+- name: Create routing configuration
+  shell: |
+    cat << EOF | kubectl apply -f -
+    apiVersion: aigateway.envoyproxy.io/v1alpha1
+    kind: AIGatewayRoute
+    metadata:
+      name: envoy-ai-gateway-basic
+      namespace: default
+    spec:
+      schema:
+        name: OpenAI
+      targetRefs:
+        - name: envoy-ai-gateway-basic
+          kind: Gateway
+          group: gateway.networking.k8s.io
+      rules:
+        {% for deployment in vllm_deployments %}
+        - matches:
+            - headers:
+                - type: Exact
+                  name: x-ai-eg-model
+                  value: {{ deployment.model }}
+          backendRefs:
+            - name: envoy-ai-gateway-basic-{{ deployment.name }}
+        {% endfor %}
+    EOF
+  register: route_config_result
+  changed_when: route_config_result.rc == 0
+
+- name: Restart Envoy Gateway deployment
+  shell: kubectl rollout restart -n {{ envoy_namespace }} deployment/envoy-gateway
+  register: restart_result
+  changed_when: restart_result.rc == 0
+
+- name: Wait for Envoy Gateway to be available
+  shell: |
+    kubectl wait --timeout=2m -n {{ envoy_namespace }} \
+      deployment/envoy-gateway --for=condition=Available
+  register: wait_result
+  changed_when: wait_result.rc == 0
+
+- name: Wait for basic gateway pod to be ready
+  shell: |
+    kubectl wait pods --timeout=2m \
+      -l gateway.envoyproxy.io/owning-gateway-name=envoy-ai-gateway-basic \
+      -n {{ envoy_namespace }} \
+      --for=condition=Ready
+  register: pod_wait_result
+  changed_when: pod_wait_result.rc == 0
+
+- name: Get Gateway URL
+  shell: |
+    kubectl get service -n {{ envoy_namespace }} envoy-ai-gateway-basic -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
+  register: gateway_url
+  ignore_errors: true
+
+- name: Display Gateway URL and example usage for each model
+  debug:
+    msg: |
+      Envoy AI Gateway has been deployed successfully.
+      Gateway URL: http://{{ gateway_url.stdout }}
+      
+      Example usage for available models:
+      {% for deployment in vllm_deployments %}
+      
+      For model: {{ deployment.model }}
+      curl -X POST \
+        http://{{ gateway_url.stdout }}/v1/chat/completions \
+        -H "Content-Type: application/json" \
+        -H "x-ai-eg-model: {{ deployment.model }}" \
+        -d '{
+          "messages": [
+            {"role": "user", "content": "What is machine learning?"}
+          ],
+          "temperature": 0.7,
+          "max_tokens": 150
+        }'
+      {% endfor %}
+  when: gateway_url.rc == 0
+
+- name: Verify deployment
+  shell: |
+    kubectl get aigatewayroute,aiservicebackend,backend,backendtlspolicy -n default
+  register: verify_result
+  changed_when: false 

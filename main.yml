@@ -1,0 +1,94 @@
+---
+- name: Deploy EKS Cluster with vLLM, Prometheus, and Envoy AI Gateway
+  hosts: localhost
+  gather_facts: false
+  vars:
+    # Cluster configuration
+    cluster_name: "my-eks-cluster"
+    region: "us-east-1"
+    azs: "us-east-1a,us-east-1b"
+    node_instance_type: "g4dn.xlarge"
+    eks_version: "1.27"
+    ssh_key_name: "my-eks-key"
+    ssh_public_key: "~/.ssh/id_rsa.pub"
+
+    # Component flags
+    install_vllm: true
+    install_prometheus: true
+    install_envoy: true
+
+    # vLLM configuration
+    vllm_image: "vllm/vllm-openai:latest"
+    vllm_deployments:
+      - name: vllm-model-1
+        model: "facebook/opt-6.7b"
+        header_value: "facebook-opt-6.7b"
+        pvc: "model-storage-1"
+      - name: vllm-model-2
+        model: "microsoft/Phi-3-mini-4k-instruct"
+        header_value: "phi-3-mini-4k-instruct"
+        pvc: "model-storage-2"
+
+    # Prometheus configuration
+    prometheus_namespace: "monitoring"
+    prometheus_version: "v2.47.0"
+
+    # Envoy configuration
+    envoy_namespace: "envoy-gateway-system"
+    envoy_ai_namespace: "envoy-ai-gateway-system"
+
+  tasks:
+    - name: Verify required tools
+      command: "{{ item }}"
+      loop:
+        - "aws --version"
+        - "eksctl version"
+        - "kubectl version --client"
+        - "helm version"
+      register: check_tools
+      ignore_errors: true
+
+    - name: Create EKS cluster
+      shell: |
+        eksctl create cluster \
+          --name {{ cluster_name }} \
+          --region {{ region }} \
+          --version {{ eks_version }} \
+          --nodegroup-name standard-workers \
+          --node-type {{ node_instance_type }} \
+          --nodes 2 \
+          --nodes-min 1 \
+          --nodes-max 3 \
+          --ssh-access \
+          --ssh-public-key {{ ssh_public_key }} \
+          --managed
+
+    # Storage setup tasks
+    - name: Install EBS CSI driver
+      include_tasks: tasks/storage-setup.yml
+      when: install_vllm|bool
+
+    # vLLM deployment tasks
+    - name: Deploy vLLM
+      include_tasks: tasks/vllm-deploy.yml
+      when: install_vllm|bool
+
+    # Prometheus deployment tasks
+    - name: Deploy Prometheus
+      include_tasks: tasks/prometheus-deploy.yml
+      when: install_prometheus|bool
+
+    # Envoy Gateway deployment tasks
+    - name: Deploy Envoy Gateway
+      include_tasks: tasks/envoy-deploy.yml
+      when: install_envoy|bool
+
+    # Cleanup handler
+    - name: Register cleanup handler
+      command: echo "Registering cleanup handler"
+      notify: cleanup resources
+      when: cleanup|default(false)|bool
+
+  handlers:
+    - name: cleanup resources
+      include_tasks: tasks/cleanup.yml 
