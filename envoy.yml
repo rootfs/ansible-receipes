@@ -108,7 +108,7 @@
                 - headers:
                     - type: Exact
                       name: x-ai-eg-model
-                      value: phi-3-mini-4k-instruct
+                      value: microsoft/Phi-3-mini-4k-instruct
               backendRefs:
                 - name: envoy-ai-gateway-basic-vllm-2
         EOF
