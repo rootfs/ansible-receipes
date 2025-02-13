@@ -8,11 +8,9 @@
     region: "us-east-1"
     azs: "us-east-1a,us-east-1b"
     node_instance_type: "g4dn.xlarge"
-    eks_version: "1.27"
-    ssh_key_name: "my-eks-key"
-    ssh_public_key: "~/.ssh/id_rsa.pub"
 
     # Component flags
+    create_cluster: true
     install_vllm: true
     install_prometheus: true
     install_envoy: true
@@ -53,7 +51,6 @@
         eksctl create cluster \
           --name {{ cluster_name }} \
           --region {{ region }} \
-          --version {{ eks_version }} \
           --nodegroup-name standard-workers \
           --node-type {{ node_instance_type }} \
           --nodes 2 \
@@ -62,6 +59,7 @@
           --ssh-access \
           --ssh-public-key {{ ssh_public_key }} \
           --managed
+      when: create_cluster|bool
 
     # Storage setup tasks
     - name: Install EBS CSI driver

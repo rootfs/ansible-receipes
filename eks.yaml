@@ -7,7 +7,6 @@
     region: "us-east-1"
     azs: "us-east-1a"
     node_instance_type: "g4dn.xlarge"
-    eks_version: "1.27"
     ssh_key_name: "my-eks-key"
     ssh_public_key: "~/.ssh/id_rsa.pub"
     vllm_image: "vllm/vllm-openai:latest"
@@ -40,7 +39,6 @@
         eksctl create cluster 
         --name {{ cluster_name }}
         --region {{ region }}
-        --version {{ eks_version }}
         --nodegroup-name ng-1
         --node-type {{ node_instance_type }}
         --nodes 2
