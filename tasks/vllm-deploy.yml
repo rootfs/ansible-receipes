@@ -2,12 +2,12 @@
 - name: Delete existing vLLM deployments and services
   shell: |
     kubectl delete deployment,service -l app.kubernetes.io/part-of=vllm || true
-    
+
 - name: Create Chat Template ConfigMaps
   shell: |
     echo "Applying chat templates..."
     kubectl apply -f ./templates/phi-chat-template.yaml
-    kubectl apply -f ./templates/opt-chat-template.yaml   
+    kubectl apply -f ./templates/opt-chat-template.yaml
 
 - name: Deploy vLLM Models
   shell: |
@@ -197,4 +197,14 @@
 - name: Wait for vLLM deployments to be ready
   shell: |
     kubectl wait --for=condition=available deployment/{{ item.name }} --timeout=600s
-  loop: "{{ vllm_deployments }}" 
+  loop: "{{ vllm_deployments }}"
+
+
+- name: Expose vLLM services
+  shell: |
+    kubectl expose svc {{ item.name }} --type=LoadBalancer --name={{ item.name }}-lb -n default
+  loop:
+    - { name: vllm-model-1-service }
+    - { name: vllm-model-2-service }
+  register: expose_service_result
+  changed_when: expose_service_result.rc == 0
