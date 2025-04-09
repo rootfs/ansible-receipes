@@ -2,13 +2,9 @@
 - name: Deploy EKS Cluster, vLLM, and Envoy AI Gateway
   hosts: localhost
   gather_facts: false
+  vars_files:
+    - group_vars/all.yml
   vars:
-    cluster_name: "envoy-ai-gateway-eks-cluster"
-    region: "us-east-1"
-    azs: "us-east-1a"
-    node_instance_type: "g4dn.xlarge"
-    ssh_key_name: "my-eks-key"
-    ssh_public_key: "~/.ssh/id_rsa.pub"
     vllm_image: "vllm/vllm-openai:latest"
     model_1: "facebook/opt-6.7b"
     model_2: "mistralai/Mistral-7B-Instruct-v0.1"
@@ -34,26 +30,26 @@
     #  register: ssh_key_upload
     #  ignore_errors: true
 
-    - name: Create EKS cluster with two g4dn.xlarge nodes
-      command: >
-        eksctl create cluster 
-        --name {{ cluster_name }}
-        --region {{ region }}
-        --nodegroup-name ng-1
-        --node-type {{ node_instance_type }}
-        --nodes 2
-        --nodes-min 2
-        --nodes-max 2
-        --managed
-      register: eks_creation
-      changed_when: "'created' in eks_creation.stdout"
+   # - name: Create EKS cluster with two g4dn.xlarge nodes
+   #   command: >
+   #     eksctl create cluster 
+   #     --name {{ cluster_name }}
+   #     --region {{ region }}
+   #     --nodegroup-name ng-1
+   #     --node-type {{ node_instance_type }}
+   #     --nodes 2
+   #     --nodes-min 2
+   #     --nodes-max 2
+   #     --managed
+   #   register: eks_creation
+   #   changed_when: "'created' in eks_creation.stdout"
 
-    - name: Update kubeconfig to access EKS cluster
-      command: "aws eks update-kubeconfig --region {{ region }} --name {{ cluster_name }}"
+   # - name: Update kubeconfig to access EKS cluster
+   #   command: "aws eks update-kubeconfig --region {{ region }} --name {{ cluster_name }}"
 
-    - name: Install NVIDIA device plugin
-      command: >
-        kubectl apply -f https://raw.githubusercontent.com/NVIDIA/k8s-device-plugin/v0.14.0/nvidia-device-plugin.yml
+   # - name: Install NVIDIA device plugin
+   #   command: >
+   #     kubectl apply -f https://raw.githubusercontent.com/NVIDIA/k8s-device-plugin/v0.14.0/nvidia-device-plugin.yml
 
     - name: Create IAM OIDC provider for EKS cluster
       command: >

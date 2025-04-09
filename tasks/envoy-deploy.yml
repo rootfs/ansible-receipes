@@ -9,7 +9,7 @@
 
 - name: Deploy AI Gateway via Helm
   shell: |
-    helm upgrade -i aieg oci://ghcr.io/envoyproxy/ai-gateway/ai-gateway-helm \
+    helm upgrade -i aieg oci://docker.io/envoyproxy/ai-gateway-helm \
       --version v0.0.0-latest \
       --namespace {{ envoy_ai_namespace }} \
       --create-namespace
@@ -62,6 +62,35 @@
   register: vllm_backend_result
   changed_when: vllm_backend_result.rc == 0
 
+# - name: Create routing configuration
+#   shell: |
+#     cat << EOF | kubectl apply -f -
+#     apiVersion: aigateway.envoyproxy.io/v1alpha1
+#     kind: AIGatewayRoute
+#     metadata:
+#       name: envoy-ai-gateway-basic
+#       namespace: default
+#     spec:
+#       schema:
+#         name: OpenAI
+#       targetRefs:
+#         - name: envoy-ai-gateway-basic
+#           kind: Gateway
+#           group: gateway.networking.k8s.io
+#       rules:
+#         {% for deployment in vllm_deployments %}
+#         - matches:
+#             - headers:
+#                 - type: Exact
+#                   name: x-ai-eg-model
+#                   value: "{{ deployment.model }}"
+#           backendRefs:
+#             - name: "envoy-ai-gateway-basic-{{ deployment.name }}"
+#         {% endfor %}
+#     EOF
+#   register: route_config_result
+#   changed_when: route_config_result.rc == 0
+
 - name: Create routing configuration
   shell: |
     cat << EOF | kubectl apply -f -
@@ -78,18 +107,24 @@
           kind: Gateway
           group: gateway.networking.k8s.io
       rules:
-        {% for deployment in vllm_deployments %}
         - matches:
             - headers:
                 - type: Exact
                   name: x-ai-eg-model
-                  value: {{ deployment.model }}
+                  value: facebook/opt-6.7b
           backendRefs:
-            - name: envoy-ai-gateway-basic-{{ deployment.name }}
-        {% endfor %}
-    EOF
+            - name: envoy-ai-gateway-basic-vllm-model-1
+        - matches:
+            - headers:
+                - type: Exact
+                  name: x-ai-eg-model
+                  value: microsoft/Phi-3-mini-4k-instruct
+          backendRefs:
+            - name: envoy-ai-gateway-basic-vllm-model-2
+      EOF
   register: route_config_result
   changed_when: route_config_result.rc == 0
+
 
 - name: Restart Envoy Gateway deployment
   shell: kubectl rollout restart -n {{ envoy_namespace }} deployment/envoy-gateway
@@ -123,10 +158,10 @@
     msg: |
       Envoy AI Gateway has been deployed successfully.
       Gateway URL: http://{{ gateway_url.stdout }}
-      
+
       Example usage for available models:
       {% for deployment in vllm_deployments %}
-      
+
       For model: {{ deployment.model }}
       curl -X POST \
         http://{{ gateway_url.stdout }}/v1/chat/completions \
@@ -146,4 +181,4 @@
   shell: |
     kubectl get aigatewayroute,aiservicebackend,backend,backendtlspolicy -n default
   register: verify_result
-  changed_when: false 
+  changed_when: false

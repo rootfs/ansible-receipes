@@ -2,14 +2,16 @@
 - name: Deploy EKS Cluster, vLLM, and Envoy AI Gateway
   hosts: localhost
   gather_facts: false
+  vars_files:
+    - group_vars/all.yml
   vars:
-    cluster_name: "my-eks-cluster"
-    region: "us-east-1"
-    azs: "us-east-1a,us-east-1b"
-    node_instance_type: "g4dn.xlarge"
+    #cluster_name: "test-router-cluster"
+    #region: "us-east-1"
+    #azs: "us-east-1a,us-east-1b"
+    #node_instance_type: "g4dn.12xlarge"
     eks_version: "1.27"
-    ssh_key_name: "my-eks-key"
-    ssh_public_key: "~/.ssh/id_rsa.pub"
+    #ssh_key_name: ""
+    #ssh_public_key: "~/.ssh/id_rsa.pub"
     vllm_image: "vllm/vllm-openai:latest"
     envoy_namespace: "envoy-gateway-system"
     envoy_release_name: "eg"

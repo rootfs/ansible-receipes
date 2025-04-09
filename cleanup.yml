@@ -2,10 +2,9 @@
 - name: Clean up EKS cluster, public endpoints, and resources
   hosts: localhost
   gather_facts: false
+  vars_files:
+    - group_vars/all.yml
   vars:
-    cluster_name: "envoy-ai-gateway-eks-cluster"
-    region: "us-east-1"
-    ssh_key_name: "my-eks-key"
     envoy_namespace: "envoy-ai"
 
   tasks:

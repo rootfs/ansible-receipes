@@ -1,0 +1,6 @@
+# Cluster configuration
+region: us-east-1
+cluster_name: test-router-cluster
+ssh_public_key: ~/.ssh/id_vllmd.pub
+azs: "us-east-1a,us-east-1b"
+node_instance_type: "g4dn.12xlarge"

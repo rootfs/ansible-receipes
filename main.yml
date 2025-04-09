@@ -2,13 +2,9 @@
 - name: Deploy EKS Cluster with vLLM, Prometheus, and Envoy AI Gateway
   hosts: localhost
   gather_facts: false
+  vars_files:
+    - group_vars/all.yml
   vars:
-    # Cluster configuration
-    cluster_name: "my-eks-cluster"
-    region: "us-east-1"
-    azs: "us-east-1a,us-east-1b"
-    node_instance_type: "g4dn.xlarge"
-
     # Component flags
     create_cluster: true
     install_vllm: true
@@ -45,6 +41,17 @@
         - "helm version"
       register: check_tools
       ignore_errors: true
+
+    - name: Check if EKS cluster exists
+      shell: |
+        eksctl get cluster --name {{ cluster_name }} --region {{ region }}
+      register: cluster_exists
+      ignore_errors: true
+
+    - name: Set create_cluster to false if cluster exists
+      set_fact:
+        create_cluster: false
+      when: cluster_exists.rc == 0
 
     - name: Create EKS cluster
       shell: |
